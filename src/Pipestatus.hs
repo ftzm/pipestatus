@@ -19,6 +19,11 @@ import System.IO
 import System.IO.Error
 import System.Posix.Files
 
+import Prelude hiding (catch)
+import System.Directory
+import Control.Exception hiding (handle)
+import System.IO.Error hiding (catch)
+
 -------------------------------------------------------------------------------
 -- General
 
@@ -148,14 +153,26 @@ parseLine r (label:';':s) =
     _   -> parseLine r s
 parseLine r s = dunstify 1 s >> return r
 
-makePipe = catchIOError makePipe' handler
+removeIfExists :: FilePath -> IO ()
+removeIfExists fileName = removeFile fileName `catch` handleExists
+  where handleExists e
+          | isDoesNotExistError e = return ()
+          | otherwise = throwIO e
+
+makePipe :: FilePath -> IO ()
+makePipe fileName = do
+  catchIOError makePipe' handler
   where
-    handler _ = putStrLn "File already exists at /tmp/statuspipe.fifo"
-    makePipe' = createNamedPipe "/tmp/statuspipe.fifo" accessModes
+    handler _ = putStrLn $ "File already exists at" ++ fileName
+    makePipe' = createNamedPipe fileName accessModes
+
+fifo :: FilePath
+fifo = "/tmp/statuspipe.fifo"
 
 pipestatus :: IO ()
 pipestatus = do
-  makePipe
-  h <- openFile "/tmp/statuspipe.fifo" ReadWriteMode
+  removeIfExists fifo
+  makePipe fifo
+  h <- openFile fifo ReadWriteMode
   statusFifo <- hGetContents h
   foldM_ parseLine emptyStatuses $ lines statusFifo
