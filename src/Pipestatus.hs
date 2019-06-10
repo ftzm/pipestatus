@@ -102,7 +102,7 @@ type Volume = Int
 
 instance Status Volume where
   parse = readMaybe
-  diff x y = Just $ show $ x - y
+  diff x y = Just $ show y
 
 -------------------------------------------------------------------------------
 -- Statuses
@@ -113,7 +113,7 @@ data Statuses = Statuses
   { _xmonad :: (DunstId, XMonad)
   , _volume :: (DunstId, Volume)
   , _battery :: (DunstId, Battery)
-  }
+  } deriving (Show)
 makeLenses ''Statuses
 
 emptyStatuses :: Statuses
