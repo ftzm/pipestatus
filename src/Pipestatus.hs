@@ -127,8 +127,9 @@ emptyStatuses = Statuses
 -- Runner
 
 dunstify :: Int -> String -> IO Int
-dunstify i msg = fromMaybe 5 . readMaybe
-  <$> readProcess "dunstify" ["-r", show i, "-p", msg] []
+dunstify i msg = fromMaybe 0. readMaybe
+  <$> catchIOError cmd (\_ -> return "0")
+  where cmd = readProcess "dunstify" ["-r", show i, "-p", msg] []
 
 handle :: Status a => String -> Int -> a -> IO (Int, a)
 handle s i x = fromMaybe (return (i, x)) $ do
