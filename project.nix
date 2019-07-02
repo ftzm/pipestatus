@@ -1,5 +1,5 @@
-{ mkDerivation, base, containers, hpack, lens, process, split
-, stdenv, unix
+{ mkDerivation, base, containers, directory, hpack, lens
+, megaparsec, process, split, stdenv, time, unix
 }:
 mkDerivation {
   pname = "pipestatus";
@@ -8,14 +8,16 @@ mkDerivation {
   isLibrary = true;
   isExecutable = true;
   libraryHaskellDepends = [
-    base containers lens process split unix
+    base containers directory lens megaparsec process split time unix
   ];
   libraryToolDepends = [ hpack ];
   executableHaskellDepends = [
-    base containers lens process split unix
+    base containers directory lens megaparsec process split time unix
   ];
-  testHaskellDepends = [ base containers lens process split unix ];
-  preConfigure = "hpack";
+  testHaskellDepends = [
+    base containers directory lens megaparsec process split time unix
+  ];
+  prePatch = "hpack";
   homepage = "https://github.com/githubuser/pipestatus#readme";
   license = stdenv.lib.licenses.bsd3;
 }

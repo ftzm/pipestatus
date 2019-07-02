@@ -27,6 +27,8 @@ dependencies:
 - lens
 - unix
 - directory
+- time
+- megaparsec
 
 library:
   source-dirs: src

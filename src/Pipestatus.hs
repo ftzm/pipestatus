@@ -2,27 +2,30 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-
 module Pipestatus (pipestatus) where
 
-import Text.Read
-import Data.List
-import Data.List.Split
-import Data.Maybe
-import qualified Data.Set as S
+import           Control.Lens
+import           Control.Monad
+import           Data.Char
+import           Data.List
+import           Data.List.Split
 import qualified Data.Map.Strict as M
-import Data.Char
-import Control.Monad
-import Control.Lens
-import System.Process
-import System.IO
-import System.IO.Error
-import System.Posix.Files
+import           Data.Maybe
+import qualified Data.Set as S
+import           System.IO
+import           System.IO.Error
+import           System.Posix.Files
+import           System.Process
+import           Text.Read
 
-import Prelude hiding (catch)
-import System.Directory
-import Control.Exception hiding (handle)
-import System.IO.Error hiding (catch)
+import           Prelude hiding (catch)
+import           System.Directory
+import           Control.Exception hiding (handle)
+import           System.IO.Error hiding (catch)
+
+import           Data.Time
+import           Text.Megaparsec
+
 
 -------------------------------------------------------------------------------
 -- General
@@ -33,7 +36,7 @@ firstDiff fs r1 r2 = msum $ map match fs
                 | otherwise = Nothing
 
 class (Eq a, Show a) => Status a where
-  parse :: String -> Maybe a
+  parseStatus:: String -> Maybe a
   diff :: a -> a -> Maybe String
 
 -------------------------------------------------------------------------------
@@ -72,7 +75,7 @@ getPieces s = let parts = splitOn " : " s in
     _ -> Just (head parts, parts !! 1, True)
 
 instance Status XMonad where
-  parse = parseXMonad
+  parseStatus= parseXMonad
   diff = firstDiff [focused, showWs . workSpaces, layout]
 
 -------------------------------------------------------------------------------
@@ -96,7 +99,7 @@ parseACPI s = do
     m = M.fromList fields :: M.Map String String
 
 instance Status Battery where
-  parse = parseACPI
+  parseStatus= parseACPI
   diff x y | x == y = Nothing
            | x /= y = Just (show ( percent y) ++ " - " ++ state y)
 
@@ -106,7 +109,7 @@ instance Status Battery where
 type Volume = Int
 
 instance Status Volume where
-  parse = readMaybe
+  parseStatus = readMaybe
   diff x y = Just $ show y
 
 -------------------------------------------------------------------------------
@@ -118,6 +121,7 @@ data Statuses = Statuses
   { _xmonad :: (DunstId, XMonad)
   , _volume :: (DunstId, Volume)
   , _battery :: (DunstId, Battery)
+  , _reportage :: DunstId
   } deriving (Show)
 makeLenses ''Statuses
 
@@ -126,10 +130,23 @@ emptyStatuses = Statuses
   { _xmonad = (0, emptyXMonad)
   , _volume = (0, 0)
   , _battery = (0, emptyBattery)
+  , _reportage = 0
   }
 
 -------------------------------------------------------------------------------
 -- Runner
+
+getTime :: IO String
+getTime = do
+  utc <- utcToLocalTime <$> getCurrentTimeZone <*> getCurrentTime
+  let local = localTimeOfDay utc
+  return $ (show $ todHour local) ++ "." ++ (show $ todMin local)
+
+report :: Statuses -> DunstId -> IO DunstId
+report r i = do
+  time <- getTime
+  let x = show $ snd $ _xmonad r
+  dunstify i $ intercalate " // " [x, time]
 
 dunstify :: Int -> String -> IO Int
 dunstify i msg = fromMaybe 0. readMaybe
@@ -138,11 +155,12 @@ dunstify i msg = fromMaybe 0. readMaybe
 
 handle :: Status a => String -> Int -> a -> IO (Int, a)
 handle s i x = fromMaybe (return (i, x)) $ do
-      parsed <- parse s
+      parsed <- parseStatus s
       diff <- diff x parsed
       return $ (,parsed) <$> dunstify i diff
 
 parseLine :: Statuses -> String -> IO Statuses
+parseLine r ('?':_) = r & reportage %%~ report r
 parseLine r (label:';':s) =
   let go x = r & x %%~ uncurry (handle s)
   in case label of
