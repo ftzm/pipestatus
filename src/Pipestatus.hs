@@ -1,22 +1,22 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Pipestatus (pipestatus) where
 
 import           Control.Lens
 import           Control.Monad
-import           Data.Char
 import           Data.List
-import           Data.List.Split
-import qualified Data.Map.Strict as M
 import           Data.Maybe
-import qualified Data.Set as S
+import           Data.Void
 import           System.IO
 import           System.IO.Error
 import           System.Posix.Files
 import           System.Process
-import           Text.Read
+import           Text.Read hiding (choice)
+import           Text.Printf
 
 import           Prelude hiding (catch)
 import           System.Directory
@@ -25,10 +25,44 @@ import           System.IO.Error hiding (catch)
 
 import           Data.Time
 import           Text.Megaparsec
+import           Text.Megaparsec.Char
+import           Text.Megaparsec.Char.Lexer (decimal)
 
+-------------------------------------------------------------------------------
+-- Dunst
+
+data Urgency = Low | Normal | Critical deriving (Show)
+
+data Dunstify = Dunstify
+  { urgency :: Urgency
+  , timeOut :: Int
+  , message :: String
+  , replaceId :: Int
+  }
+
+stdMsg :: String -> Int -> Dunstify
+stdMsg = Dunstify Normal 2000
+
+dunstify :: Dunstify -> IO DunstId
+dunstify Dunstify {..} =
+  fromMaybe 0 . readMaybe <$> catchIOError cmd (const $ return "0")
+  where
+    cmd = readProcess "dunstify"
+      ["-r"
+      , show replaceId
+      , "-u"
+      , show urgency
+      , "-t"
+      , show timeOut
+      , "-p"
+      , message
+      ]
+      []
 
 -------------------------------------------------------------------------------
 -- General
+
+type Parser = Parsec Void String
 
 firstDiff :: [a -> String] -> a -> a -> Maybe String
 firstDiff fs r1 r2 = msum $ map match fs
@@ -37,71 +71,91 @@ firstDiff fs r1 r2 = msum $ map match fs
 
 class (Eq a, Show a) => Status a where
   parseStatus:: String -> Maybe a
-  diff :: a -> a -> Maybe String
+  diff :: a -> a -> Maybe (Int -> Dunstify)
 
 -------------------------------------------------------------------------------
 -- XMonad
 
-type Workspaces = S.Set String
-
-showWs =  unwords . S.toList
+data Workspace = Focused String | Unfocused String
+type Workspaces = [String]
 
 data XMonad = XMonad
   { focused :: String
   , workSpaces :: Workspaces
   , layout  :: String
   } deriving (Show, Eq)
-emptyXMonad = XMonad "" S.empty ""
+
+emptyXMonad = XMonad "" [] ""
 
 parseXMonad :: String -> Maybe XMonad
-parseXMonad s = do
-    (rawWs, mode, occ) <- getPieces s
-    let (foc, ws) = parseWorkspaces rawWs occ
-    return $ XMonad foc ws mode
+parseXMonad = parseMaybe $ do
+  (u, f) <- parseWorkspaces
+  chunk ": "
+  l <- some alphaNumChar
+  takeRest
+  return $ XMonad f u l
 
-parseWorkspaces :: String -> Bool -> (String, S.Set String)
-parseWorkspaces s occ = (cur, if occ then S.insert cur wSet else wSet )
+parseWorkspaces :: Parser (Workspaces, String)
+parseWorkspaces = sw <$> sepEndBy1 (f <|> u) (char ' ')
   where
-    (curList, occList) = partition (elem '[') $ words s
-    cur = tail $ init $ head curList
-    wSet = S.fromList occList
-
-getPieces :: String -> Maybe (String, String, Bool)
-getPieces s = let parts = splitOn " : " s in
-  case length parts of
-    0 -> Nothing
-    1 -> Nothing
-    2 -> Just (head parts, parts !! 1, False)
-    _ -> Just (head parts, parts !! 1, True)
+    f = Focused <$> between (char '[') (char ']') (some alphaNumChar)
+    u = Unfocused <$> some alphaNumChar
+    sw xs = ([s | Unfocused s <- xs] , head [s | Focused s <- xs])
 
 instance Status XMonad where
-  parseStatus= parseXMonad
-  diff = firstDiff [focused, showWs . workSpaces, layout]
+  parseStatus = parseXMonad
+  diff x y = stdMsg <$> firstDiff [focused, unwords . workSpaces, layout] x y
 
 -------------------------------------------------------------------------------
 -- Battery
 
+data BatStatus = Full | Charging | Discharging deriving (Show, Eq)
+
 data Battery = Battery
   { percent :: Int
-  , state :: String
+  , state :: BatStatus
+  , remaining :: String -- (hours, minutes)
+  , alert :: Bool
   } deriving (Show, Eq)
 
-emptyBattery = Battery 100 "Full"
+emptyBattery = Battery 100 Full "0.0" False
 
-parseACPI :: String -> Maybe Battery
-parseACPI s = do
-  state <- M.lookup "state" m
-  percent <- readMaybe . filter isDigit =<< M.lookup "percentage" m :: Maybe Int
-  Just $ Battery percent state
+parseACPI :: Parser Battery
+parseACPI = do
+  state <- choice
+    [ (chunk "Full" <|> chunk "Unknown") >> pure Full
+    , chunk "Charging" >> pure Charging
+    , chunk "Discharging" >> pure Discharging
+    ]
+  space
+  percent <- decimal
+  space
+  energyNow <- fromIntegral <$> decimal
+  space
+  powerNow <- fromIntegral <$> decimal
+  let remaining = getRemaining energyNow powerNow
+  let alert = state == Discharging && percent < 10
+  pure $ Battery {..}
   where
-    ls = splitOn ";" $ filter (not . isSpace) s
-    fields = map ((\(x, y) -> (x, drop 1 y)) . span (':' /=)) ls
-    m = M.fromList fields :: M.Map String String
+    getRemaining e p =
+      let (h, m) = quotRem (round $ fromIntegral e / fromIntegral p * 60) 60
+      in show h ++ "." ++ show m
+
+displayBattery :: Battery -> String
+displayBattery b = case state b of
+  Full -> "Charged"
+  Charging -> "Charging: " ++ p
+  Discharging -> "Discharging: " ++ p ++ " / " ++ remaining b ++ " remaining"
+  where
+    p = (show $ percent b) ++ "%"
 
 instance Status Battery where
-  parseStatus= parseACPI
+  parseStatus = parseMaybe parseACPI
   diff x y | x == y = Nothing
-           | x /= y = Just (show ( percent y) ++ " - " ++ state y)
+           | x /= y = Just $ Dunstify
+                      (if alert y then Critical else Normal)
+                      10000
+                      (displayBattery y)
 
 -------------------------------------------------------------------------------
 -- Volume
@@ -110,7 +164,7 @@ type Volume = Int
 
 instance Status Volume where
   parseStatus = readMaybe
-  diff x y = Just $ show y
+  diff x y = Just $ stdMsg $ show y
 
 -------------------------------------------------------------------------------
 -- Statuses
@@ -134,42 +188,28 @@ emptyStatuses = Statuses
   }
 
 -------------------------------------------------------------------------------
--- Runner
+-- Report
 
 getTime :: IO String
 getTime = do
   utc <- utcToLocalTime <$> getCurrentTimeZone <*> getCurrentTime
   let local = localTimeOfDay utc
-  return $ (show $ todHour local) ++ "." ++ (show $ todMin local)
+  return $ (show $ todHour local) ++ "." ++ (printf "%02d" $ todMin local)
 
 report :: Statuses -> DunstId -> IO DunstId
 report r i = do
   time <- getTime
-  let x = show $ snd $ _xmonad r
-  dunstify i $ intercalate " // " [x, time]
+  let x = r ^. xmonad . _2
+  let x_u = workSpaces x
+  let x_f = focused x
+  let x_l = layout x
+  let x_string = x_f ++ "-" ++ x_l ++ " ( " ++ (intercalate " " x_u) ++ " )"
+  let b_s = r ^. battery . _2 & displayBattery
+  let v_s = "vol: " ++ (r ^. volume . _2 & show)
+  dunstify $ stdMsg (intercalate "  •  " [x_string, v_s, b_s, time]) i
 
-dunstify :: Int -> String -> IO Int
-dunstify i msg = fromMaybe 0. readMaybe
-  <$> catchIOError cmd (\_ -> return "0")
-  where cmd = readProcess "dunstify" ["-r", show i, "-p", msg] []
-
-handle :: Status a => String -> Int -> a -> IO (Int, a)
-handle s i x = fromMaybe (return (i, x)) $ do
-      parsed <- parseStatus s
-      diff <- diff x parsed
-      return $ (,parsed) <$> dunstify i diff
-
-parseLine :: Statuses -> String -> IO Statuses
-parseLine r ('?':_) = r & reportage %%~ report r
-parseLine r (label:';':s) =
-  let go x = r & x %%~ uncurry (handle s)
-  in case label of
-    'x' -> go xmonad
-    'v' -> go volume
-    'b' -> go battery
-    's' -> go battery
-    _   -> parseLine r s
-parseLine r s = dunstify 1 s >> return r
+-------------------------------------------------------------------------------
+-- Pipe
 
 removeIfExists :: FilePath -> IO ()
 removeIfExists fileName = removeFile fileName `catch` handleExists
@@ -186,6 +226,27 @@ makePipe fileName = do
 
 fifo :: FilePath
 fifo = "/tmp/statuspipe.fifo"
+
+-------------------------------------------------------------------------------
+-- Runner
+
+handle :: Status a => String -> Int -> a -> IO (Int, a)
+handle s i x = fromMaybe (return (i, x)) $ do
+      parsed <- parseStatus s
+      diff <- diff x parsed
+      return $ (,parsed) <$> (dunstify $ (diff i))
+
+parseLine :: Statuses -> String -> IO Statuses
+parseLine r ('?':_) = r & reportage %%~ report r
+parseLine r (label:';':s) =
+  let go x = r & x %%~ uncurry (handle s)
+  in print s >> case label of
+    'x' -> go xmonad
+    'v' -> go volume
+    'b' -> go battery
+    's' -> go battery
+    _   -> parseLine r s
+parseLine r s = dunstify (stdMsg s 1) >> return r
 
 pipestatus :: IO ()
 pipestatus = do

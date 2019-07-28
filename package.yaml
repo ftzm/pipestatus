@@ -29,6 +29,7 @@ dependencies:
 - directory
 - time
 - megaparsec
+- parser-combinators
 
 library:
   source-dirs: src
@@ -37,17 +38,6 @@ executables:
   pipestatus:
     main:                Main.hs
     source-dirs:         app
-    ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    dependencies:
-    - pipestatus
-
-tests:
-  pipestatus-test:
-    main:                Spec.hs
-    source-dirs:         test
     ghc-options:
     - -threaded
     - -rtsopts
