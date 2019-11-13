@@ -45,7 +45,7 @@ stdMsg = Dunstify Normal 2000
 
 dunstify :: Dunstify -> IO DunstId
 dunstify Dunstify {..} =
-  fromMaybe 0 . readMaybe <$> catchIOError cmd (const $ return "0")
+  fromMaybe 0 . readMaybe <$> catchIOError cmd (\e -> hPutStrLn stderr (show e) >> return "0")
   where
     cmd = readProcess "dunstify"
       ["-r"

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 status=$(</sys/class/power_supply/BAT0/status)
 capacity=$(</sys/class/power_supply/BAT0/capacity)

@@ -1,0 +1,2 @@
+* Building
+This project is built via the nix package manager.
