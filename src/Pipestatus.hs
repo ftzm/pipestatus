@@ -73,6 +73,10 @@ class (Eq a, Show a) => Status a where
   parseStatus:: String -> Maybe a
   diff :: a -> a -> Maybe (Int -> Dunstify)
 
+instance Status Int where
+  parseStatus = readMaybe
+  diff x y = Just $ stdMsg $ show y
+
 -------------------------------------------------------------------------------
 -- XMonad
 
@@ -162,9 +166,10 @@ instance Status Battery where
 
 type Volume = Int
 
-instance Status Volume where
-  parseStatus = readMaybe
-  diff x y = Just $ stdMsg $ show y
+-------------------------------------------------------------------------------
+-- Screen
+
+type Brightness = Int
 
 -------------------------------------------------------------------------------
 -- Statuses
@@ -175,6 +180,7 @@ data Statuses = Statuses
   { _xmonad :: (DunstId, XMonad)
   , _volume :: (DunstId, Volume)
   , _battery :: (DunstId, Battery)
+  , _brightness :: (DunstId, Brightness)
   , _reportage :: DunstId
   } deriving (Show)
 makeLenses ''Statuses
@@ -185,6 +191,7 @@ emptyStatuses = Statuses
   , _volume = (0, 0)
   , _battery = (0, emptyBattery)
   , _reportage = 0
+  , _brightness = (0, 0)
   }
 
 -------------------------------------------------------------------------------
@@ -200,12 +207,12 @@ report :: Statuses -> DunstId -> IO DunstId
 report r i = do
   time <- getTime
   let x = r ^. xmonad . _2
-  let x_u = workSpaces x
-  let x_f = focused x
-  let x_l = layout x
-  let x_string = x_f ++ "-" ++ x_l ++ " ( " ++ (intercalate " " x_u) ++ " )"
-  let b_s = r ^. battery . _2 & displayBattery
-  let v_s = "vol: " ++ (r ^. volume . _2 & show)
+      x_u = workSpaces x
+      x_f = focused x
+      x_l = layout x
+      x_string = x_f ++ "-" ++ x_l ++ " ( " ++ (intercalate " " x_u) ++ " )"
+      b_s = r ^. battery . _2 & displayBattery
+      v_s = "vol: " ++ (r ^. volume . _2 & show)
   dunstify $ stdMsg (intercalate "  •  " [x_string, v_s, b_s, time]) i
 
 -------------------------------------------------------------------------------
@@ -244,7 +251,7 @@ parseLine r (label:';':s) =
     'x' -> go xmonad
     'v' -> go volume
     'b' -> go battery
-    's' -> go battery
+    'B' -> go brightness
     _   -> parseLine r s
 parseLine r s = dunstify (stdMsg s 1) >> return r
 

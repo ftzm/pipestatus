@@ -1,3 +1,5 @@
 .stack-work/
 pipestatus.cabal
 *~
+dist
+dist-newstyle

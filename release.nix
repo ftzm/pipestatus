@@ -1,6 +1,15 @@
 let pkgs = import <nixpkgs> { };
 in rec {
   pipestatus = pkgs.haskellPackages.callCabal2nix "pipestatus" ./. { };
+  pipestatus-dev = pkgs.haskellPackages.developPackage {
+    root = ./.;
+    modifier = drv:
+      pkgs.haskell.lib.addBuildTools drv (with pkgs.haskellPackages;
+        [ cabal-install
+          ghcid
+          hlint
+        ]);
+  };
   pipestatus-wrapped = pkgs.callPackage ({ pipestatus, stdenv, makeWrapper }:
   stdenv.mkDerivation {
     phases = "installPhase";
@@ -15,13 +24,5 @@ in rec {
 
     '';
   }) { pipestatus = pipestatus; };
-  shell = pkgs.haskellPackages.shellFor {
-    packages = p: [ pipestatus ];
-    buildInputs = with pkgs; [
-      cabal-install
-      hlint
-      pkgs.haskellPackages.brittany
-    ];
-  };
   scripts = pkgs.callPackage ./scripts.nix { };
 }

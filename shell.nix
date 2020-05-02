@@ -1,1 +1,1 @@
-(import ./release.nix).pipestatus.env
+(import ./release.nix).pipestatus-dev
