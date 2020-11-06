@@ -1,5 +1,6 @@
-let pkgs = import <nixpkgs> { };
-in rec {
+{ pkgs }:
+
+rec {
   pipestatus = pkgs.haskellPackages.callCabal2nix "pipestatus" ./. { };
   pipestatus-dev = pkgs.haskellPackages.developPackage {
     root = ./.;
