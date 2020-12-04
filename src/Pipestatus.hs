@@ -103,7 +103,7 @@ parseWorkspaces :: Parser (Workspaces, String)
 parseWorkspaces = sw <$> sepEndBy1 (f <|> u) (char ' ')
   where
     f = Focused <$> between (char '[') (char ']') (some alphaNumChar)
-    u = Unfocused <$> some alphaNumChar
+    u = Unfocused <$> some (alphaNumChar <|> char '<' <|> char '>' )
     sw xs = ([s | Unfocused s <- xs] , head [s | Focused s <- xs])
 
 instance Status XMonad where
@@ -203,6 +203,15 @@ getTime = do
   let local = localTimeOfDay utc
   return $ (show $ todHour local) ++ "." ++ (printf "%02d" $ todMin local)
 
+layoutRenamer :: String -> String
+layoutRenamer x = case x of
+  "ResizableTall"          -> "V"
+  "Mirror ResizableTall"   -> "H"
+  "Full"                   -> "max"
+  "BSP"                    -> "bsp"
+  "Tabbed Bottom Simplest" -> "tabbed"
+  x                        -> x
+
 report :: Statuses -> DunstId -> IO DunstId
 report r i = do
   time <- getTime
@@ -210,7 +219,7 @@ report r i = do
       x_u = workSpaces x
       x_f = focused x
       x_l = layout x
-      x_string = x_f ++ "-" ++ x_l ++ " ( " ++ (intercalate " " x_u) ++ " )"
+      x_string = (layoutRenamer x_l) ++ "-" ++ x_f ++ " ( " ++ (intercalate " " x_u) ++ " )"
       b_s = r ^. battery . _2 & displayBattery
       v_s = "vol: " ++ (r ^. volume . _2 & show)
   dunstify $ stdMsg (intercalate "  •  " [x_string, v_s, b_s, time]) i
@@ -238,7 +247,7 @@ fifo = "/tmp/statuspipe.fifo"
 -- Runner
 
 handle :: Status a => String -> Int -> a -> IO (Int, a)
-handle s i x = fromMaybe (return (i, x)) $ do
+handle s i x = fromMaybe (hPutStrLn stderr ("Parse error: " ++ s) >> return (i, x)) $ do
       parsed <- parseStatus s
       diff <- diff x parsed
       return $ (,parsed) <$> (dunstify $ (diff i))
@@ -247,7 +256,7 @@ parseLine :: Statuses -> String -> IO Statuses
 parseLine r ('?':_) = r & reportage %%~ report r
 parseLine r (label:';':s) =
   let go x = r & x %%~ uncurry (handle s)
-  in print s >> case label of
+  in case label of
     'x' -> go xmonad
     'v' -> go volume
     'b' -> go battery
