@@ -3,6 +3,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Pipestatus (pipestatus) where
 
@@ -11,6 +12,7 @@ import           Control.Monad
 import           Data.List
 import           Data.Maybe
 import           Data.Void
+import qualified Data.Map as M
 import           System.IO
 import           System.IO.Error
 import           System.Posix.Files
@@ -27,6 +29,9 @@ import           Data.Time
 import           Text.Megaparsec
 import           Text.Megaparsec.Char
 import           Text.Megaparsec.Char.Lexer (decimal)
+import           Data.Aeson
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy.UTF8 as BSL
 
 -------------------------------------------------------------------------------
 -- Dunst
@@ -50,17 +55,21 @@ dunstify Dunstify {..} =
     cmd = readProcess "dunstify"
       ["-r"
       , show replaceId
+      , "-a"
+      , "pipestatus"
       , "-u"
       , show urgency
       , "-t"
       , show timeOut
       , "-p"
+      , "" -- empty title
       , message
       ]
       []
 
 -------------------------------------------------------------------------------
 -- General
+
 
 type Parser = Parsec Void String
 
@@ -78,37 +87,32 @@ instance Status Int where
   diff x y = Just $ stdMsg $ show y
 
 -------------------------------------------------------------------------------
--- XMonad
+-- Sway
 
-data Workspace = Focused String | Unfocused String
-type Workspaces = [String]
+data Workspace = Focused String
+               | Unfocused String
+  deriving (Show, Eq)
 
-data XMonad = XMonad
+data Sway = Sway
   { focused :: String
-  , workSpaces :: Workspaces
+  , workSpaces :: [Workspace]
   , layout  :: String
   } deriving (Show, Eq)
 
-emptyXMonad = XMonad "" [] ""
+emptySway = Sway "" [] ""
 
-parseXMonad :: String -> Maybe XMonad
-parseXMonad = parseMaybe $ do
-  (u, f) <- parseWorkspaces
-  chunk ": "
-  l <- some alphaNumChar
-  takeRest
-  return $ XMonad f u l
+parseSway :: String -> Maybe Sway
+parseSway s = do
+  let (input :: BSL.ByteString) = BSL.fromString s
+  m <- decode input :: Maybe (M.Map String Bool)
+  let workspaces = map (\(k, v) -> if v then Focused k else Unfocused k ) $ M.toList m
+  let focused = fromMaybe "None" $ fst <$> (find snd $ M.toList m)
+  return $ Sway focused workspaces ""
 
-parseWorkspaces :: Parser (Workspaces, String)
-parseWorkspaces = sw <$> sepEndBy1 (f <|> u) (char ' ')
-  where
-    f = Focused <$> between (char '[') (char ']') (some alphaNumChar)
-    u = Unfocused <$> some (alphaNumChar <|> char '<' <|> char '>' )
-    sw xs = ([s | Unfocused s <- xs] , head [s | Focused s <- xs])
-
-instance Status XMonad where
-  parseStatus = parseXMonad
-  diff x y = stdMsg <$> firstDiff [focused, unwords . workSpaces, layout] x y
+instance Status Sway where
+  parseStatus = parseSway
+  diff x y = stdMsg
+    <$> firstDiff [focused, unwords . (map show) . workSpaces, layout] x y
 
 -------------------------------------------------------------------------------
 -- Battery
@@ -177,7 +181,7 @@ type Brightness = Int
 type DunstId = Int
 
 data Statuses = Statuses
-  { _xmonad :: (DunstId, XMonad)
+  { _sway :: (DunstId, Sway)
   , _volume :: (DunstId, Volume)
   , _battery :: (DunstId, Battery)
   , _brightness :: (DunstId, Brightness)
@@ -187,7 +191,7 @@ makeLenses ''Statuses
 
 emptyStatuses :: Statuses
 emptyStatuses = Statuses
-  { _xmonad = (0, emptyXMonad)
+  { _sway = (0, emptySway)
   , _volume = (0, 0)
   , _battery = (0, emptyBattery)
   , _reportage = 0
@@ -198,31 +202,48 @@ emptyStatuses = Statuses
 -- Report
 
 getTime :: IO String
-getTime = do
-  utc <- utcToLocalTime <$> getCurrentTimeZone <*> getCurrentTime
-  let local = localTimeOfDay utc
-  return $ (show $ todHour local) ++ "." ++ (printf "%02d" $ todMin local)
+getTime = showTime <$> getHourMinute
+  where
+    getHourMinute = do
+      localTime <- utcToLocalTime <$> getCurrentTimeZone <*> getCurrentTime
+      let timeOfDay = localTimeOfDay localTime
+      return (todHour timeOfDay, todMin timeOfDay)
+    showTime (hour, minute) = show hour <> "." <> printf "%02d" minute
 
 layoutRenamer :: String -> String
 layoutRenamer x = case x of
-  "ResizableTall"          -> "V"
-  "Mirror ResizableTall"   -> "H"
+  "ResizableTall"          -> "left"
+  "Mirror ResizableTall"   -> "top"
   "Full"                   -> "max"
   "BSP"                    -> "bsp"
   "Tabbed Bottom Simplest" -> "tabbed"
   x                        -> x
 
+red = "#cc241d"
+darkGray = "#665c54"
+fg = "#ebdbb2"
+
+colorSpan :: String -> String -> String
+colorSpan s color ="<span foreground=\"" <> color <> "\">" <> s <> "</span>"
+
+formatWorkSpaces :: [Workspace] -> String
+formatWorkSpaces = unwords . map formatter
+  where formatter :: Workspace -> String
+        formatter (Focused s) = colorSpan s fg
+        formatter (Unfocused s) = colorSpan s darkGray
+
 report :: Statuses -> DunstId -> IO DunstId
 report r i = do
   time <- getTime
-  let x = r ^. xmonad . _2
+  let x = r ^. sway . _2
       x_u = workSpaces x
       x_f = focused x
-      x_l = layout x
-      x_string = (layoutRenamer x_l) ++ "-" ++ x_f ++ " ( " ++ (intercalate " " x_u) ++ " )"
+      --x_l = layoutRenamer $ layout x
+      x_string = formatWorkSpaces x_u
       b_s = r ^. battery . _2 & displayBattery
-      v_s = "vol: " ++ (r ^. volume . _2 & show)
-  dunstify $ stdMsg (intercalate "  •  " [x_string, v_s, b_s, time]) i
+      v_s = "<b>vol:</b> " ++ (r ^. volume . _2 & show)
+  --dunstify $ stdMsg (intercalate "  •  " [x_string, v_s, b_s, time]) i
+  dunstify $ stdMsg (intercalate "\n" [x_string, v_s, b_s, time]) i
 
 -------------------------------------------------------------------------------
 -- Pipe
@@ -247,22 +268,26 @@ fifo = "/tmp/statuspipe.fifo"
 -- Runner
 
 handle :: Status a => String -> Int -> a -> IO (Int, a)
-handle s i x = fromMaybe (hPutStrLn stderr ("Parse error: " ++ s) >> return (i, x)) $ do
-      parsed <- parseStatus s
-      diff <- diff x parsed
-      return $ (,parsed) <$> (dunstify $ (diff i))
+handle s i x =
+  case parseStatus s of
+    Nothing -> hPutStrLn stderr ("Parse error: " ++ s) >> return (i, x)
+    Just parsed -> case diff x parsed of
+      Nothing -> return (i, x)
+      Just diff -> do
+        id <- dunstify $ (diff i)
+        return (id, parsed)
 
 parseLine :: Statuses -> String -> IO Statuses
 parseLine r ('?':_) = r & reportage %%~ report r
 parseLine r (label:';':s) =
   let go x = r & x %%~ uncurry (handle s)
   in case label of
-    'x' -> go xmonad
+    'S' -> go sway
     'v' -> go volume
     'b' -> go battery
     'B' -> go brightness
     _   -> parseLine r s
-parseLine r s = dunstify (stdMsg s 1) >> return r
+parseLine r s = dunstify (stdMsg ("Parse error: " ++ s) 1) >> return r
 
 pipestatus :: IO ()
 pipestatus = do
